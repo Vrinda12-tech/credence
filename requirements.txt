@@ -1,0 +1,9 @@
+torch
+transformers>=4.40
+mambapy
+numpy
+scipy
+pandas
+matplotlib
+tqdm
+pytest
