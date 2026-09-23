@@ -41,3 +41,19 @@ def test_kernel_oscillates_iff_spectrum_is_complex():
     g_rot, g_dec = make_lgssm("osc_rotating").kernel(16), make_lgssm("osc_decay").kernel(16)
     assert (np.diff(np.sign(g_rot)) != 0).sum() >= 2
     assert (np.diff(np.sign(g_dec)) != 0).sum() == 0
+
+
+def test_dmdc_recovers_closed_loop_spectrum_from_kalman_state():
+    from beliefdelay.koopman import fit_dmdc, spectral_match
+    for name in ("osc_rotating", "osc_decay"):
+        env = make_lgssm(name)
+        y, _ = env.sample(64, 120, torch.Generator().manual_seed(0))
+        m_post, _, _ = env.kalman(y)
+        fit = fit_dmdc(m_post, y[:, :-1, None], rank=2, burn=80)
+        sm = spectral_match(fit["eig"], env.closed_loop_eig())
+        assert sm["spec_dist"] < 1e-3 and fit["r2"] > 0.9999
+
+
+def test_rotating_filter_has_complex_spectrum_decay_filter_is_real():
+    assert np.abs(make_lgssm("osc_rotating").closed_loop_eig().imag).max() > 0.3
+    assert np.abs(make_lgssm("osc_decay").closed_loop_eig().imag).max() < 1e-6

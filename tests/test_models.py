@@ -37,3 +37,18 @@ def test_continuous_input_and_delay_mlp_sees_exactly_W_lags():
     assert torch.allclose(base[:, :10], out[:, :10], atol=1e-6)                       # causal
     assert not torch.allclose(base[:, 10:10 + DELAY_WINDOW], out[:, 10:10 + DELAY_WINDOW], atol=1e-4)
     assert torch.allclose(base[:, 10 + DELAY_WINDOW:], out[:, 10 + DELAY_WINDOW:], atol=1e-5)   # forgets after W steps
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_core_head_partition_is_exact(arch):
+    """core_parameters() and head_parameters() must together cover every trainable parameter exactly once
+    (needed for the RESeL-style split learning rate: nothing double-counted, nothing silently frozen)."""
+    m = build_matched(arch, (4, 3), 4, 40_000, max_len=32)
+    all_ids = {id(p) for p in m.parameters()}
+    core_ids = {id(p) for p in m.core_parameters()}
+    head_ids = {id(p) for p in m.head_parameters()}
+    assert core_ids.isdisjoint(head_ids)
+    assert core_ids | head_ids == all_ids
+    assert len(core_ids) > 0 and len(head_ids) > 0
+    n_core = sum(p.numel() for p in m.core_parameters())
+    assert n_core / m.n_params() > 0.9   # matches the measured ~99% recurrent-core share for our sizes

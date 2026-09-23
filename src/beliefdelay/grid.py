@@ -186,6 +186,13 @@ class GridPOMDP:
             cols += [re, im, torch.sqrt(re ** 2 + im ** 2)]
         return torch.stack(cols, -1)
 
+    def koopman_eig(self) -> "np.ndarray":
+        """Eigenvalues of the true OBJECT transition operator T, restricted to reachable cells (dropping the
+        structural zero rows for unreachable/wall cells, which would otherwise contribute spurious eigenvalue-1
+        modes).  For grid_patrol this recovers the ring's Fourier spectrum: (1-p) + p * exp(2 pi i m / P)."""
+        sup = (self.mu0 > 0).nonzero(as_tuple=True)[0]
+        return np.linalg.eigvals(self.T[sup][:, sup].numpy())
+
     def dobrushin(self) -> float:
         """delta(T_obj) over the cells the object can occupy (1.0 = no one-step contraction, e.g. static)."""
         sup = (self.mu0 > 0).nonzero(as_tuple=True)[0]

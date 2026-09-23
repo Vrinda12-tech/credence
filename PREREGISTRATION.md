@@ -46,6 +46,22 @@ Metrics: M1 excess KL (lower better), M2-psr predictive-state probe (higher bett
 * Prop 7/8 concern single linear real-diagonal layers; trained RWKV/Mamba have depth, gating, token-shift/conv taps.
 * Transformer uses learned absolute positions with max_len=L; length generalisation is untested.
 
+## H6 (exploratory, added after this revision): split learning rate
+Luo et al. 2024 (arXiv:2405.15384) show a context-encoder-specific (core-vs-head) learning rate is necessary for
+stable RNN training in an unrelated domain (off-policy RL); their Proposition 1 is loss-agnostic (only assumes
+Lipschitz continuity of the network map), so it plausibly transfers to our cross-entropy setting but has NOT been
+verified to. Our recurrent core is ~99% of parameters at our sizes (measured), so a single global learning rate is
+exactly the confound they describe, for every recurrent architecture (LSTM, RWKV, Mamba), not RWKV specifically --
+their K_h<1 condition is satisfied by all three. `run_experiment.py --split-lr` and `amplification.py` (validated
+against an exact toy linear RNN) exist to test this. Any run comparing `--split-lr` against the single-LR baseline
+is exploratory until pre-registered as its own hypothesis with a fixed seed count.
+
+## H7 (exploratory, added after this revision): explicitness audit
+`explicitness.py` composes four independently calibrated axes (sufficiency, decodability, dynamical form, stability)
+per trained checkpoint. It is a REPORTING tool, not a hypothesis test: no directional claim is pre-registered here;
+any comparison across architectures on these axes is exploratory and subject to the same seed-count and multiplicity
+rules as everything else before being treated as confirmatory.
+
 ---
 ## Deviations (append only)
 _none yet_

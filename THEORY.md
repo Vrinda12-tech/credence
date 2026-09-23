@@ -139,3 +139,119 @@ Exact identity: excess MSE = `E(mu*_t - f_t)^2`. Kalman == joint-Gaussian condit
 
 ## 8. What the first CPU run (abstract envs) already suggests, and what it cannot
 Excess KL on `delayed_readout` ordered Mamba < RWKV < LSTM << Transformer with the LR possibly clipped for three of four cells; the transformer result is therefore uninterpretable until re-tuned. Nothing here bears on H1-H3.
+
+
+## 9. Koopman view (added after the oscillator results)
+The belief predict step `b -> bT` is the Perron-Frobenius operator; its adjoint `f -> Tf` is the Koopman (backward) operator. **Koopman eigenfunctions are the coordinates in which the hidden dynamics is diagonal**:
+on the patrol ring they are the Fourier modes with eigenvalues `(1-p) + p e^{2 pi i m/P}` (complex); for the oscillator the eigenvalues of `A`. For a filter driven by observations the belief mean has spectrum `eig(A(I-KC))` (`LinearGaussian.closed_loop_eig`):
+for `osc_rotating` this is `0.505 +- 0.502i` (modulus 0.71, angle 44.8 deg) versus the system's `0.686 +- 0.686i` (modulus 0.97, angle 45 deg): **observations preserve the rotation frequency but shorten the memory**.
+Delay embedding is a finite-dimensional Koopman representation (Hankel-DMD; Arbabi & Mezic 2017), which is why `delay_mlp` is the natural null.
+`koopman.fit_dmdc` fits `h_t = A h_{t-1} + B y_t` to a trained model's (PCA-reduced) hidden states; `run_lgssm --spectrum DIR` compares its eigenvalues with the exact filter spectrum (probe-free). DMDc recovers the exact spectrum from the Kalman state to 4e-6 (rotating) / 3e-4 (real) (`test_dmdc_recovers_closed_loop_spectrum...`).
+**Scope correction to Prop 7:** a real-diagonal recurrence cannot carry an exact rotation as its own dynamics, but over a FINITE horizon a damped cosine is approximated by a signed sum of enough real exponentials (Prop 5 cost). With d ~ 40 channels and lags <= 16 the observed kernel errors (RWKV/Mamba ~4%) show this is achievable; the separation should therefore be sought at long horizons (`osc_rotating_slow`, r = 0.995, L >= 128) and in exact state tracking, not at short lags.
+
+
+## 10. Statistical validation as its own artifact
+`evaluation/rigorous_validation.py` and `tests/test_rigorous_validation.py` treat the evaluation pipeline itself as something to be
+proved correct, not merely run: every guard (exact permutation validity, Holm FWER control under arbitrary dependence, Monte-Carlo
+p-value positivity, bootstrap coverage collapse below n=5, TOST equivalence, pre-registration hash-locking) is checked either by
+exact enumeration over the full permutation orbit or by simulation with a tolerance derived from the cited theorem, and each checker
+is also run against a deliberately wrong "mutant" implementation that must fail. This is what "the proof is the maths, programmed
+well" means in this project: the statistics are not just applied, their correctness is itself a tested claim.
+
+
+## 11. Making "the RNN learned it" explicit (explicitness.py)
+
+A black-box objection to RNN hidden states (unstructured h_t in R^D, "memory drift," no guarantees, can't inspect) is
+answered here not by asserting the opposite but by splitting the claim into four INDEPENDENT, separately falsifiable
+axes, each checked against an exact ground truth computed elsewhere in this project:
+
+| axis | question | instrument | ground truth |
+|---|---|---|---|
+| sufficiency | does h_t carry enough information to predict optimally? | excess KL / skill | exact Bayes/Kalman filter |
+| decodability | is that information LINEARLY exposed in h_t? | PSR / belief probes | exact predictive-state vector |
+| dynamical form | does h_t evolve approximately linearly, with a spectrum resembling the process's own? | DMDc fit R^2 + spectral match | env.koopman_eig() / closed_loop_eig() |
+| stability | does a small parameter change stay bounded across rollout length ("memory drift", Luo et al. 2024)? | amplification growth_ratio | analytic toy-RNN bound (Prop 1, arXiv:2405.15384) |
+
+No axis implies any other: a model can be sufficient while being a decodability black box (observed on delayed_readout:
+Mamba had the best excess KL and among the worst raw belief-probe scores), or linearly decodable while its own update
+law is nonlinear. `audit()` composes the instruments already built for other parts of this project (metrics.py,
+koopman.py, amplification.py) rather than adding new unverified machinery.
+
+**Calibration, not just plumbing.** `tests/test_explicitness.py` requires the audit to be right about cases with a
+known answer: a fresh model that ignores its input must score near the floor on sufficiency and decodability
+(`BlindModel`); a model whose hidden state literally IS the belief must score near ceiling. Building this calibration
+found two real bugs, not test artefacts: (1) `koopman.fit_dmdc` silently mis-sized its basis when the hidden
+dimension was smaller than the requested rank, corrupting a reshape; (2) `metrics.fit_probe`'s standardisation used
+an absolute `1e-6` floor on feature scale, which blows up any exactly-zero-variance feature (e.g. a structurally
+unreachable cell in a raw belief vector) into a huge, spurious input.
+
+**A genuine methodological finding, not a bug.** Calibrating the PSR probe against an oracle showed its score is
+0.058 on a RAW-probability belief and 0.592 on a LOG-probability belief for the identical oracle (train and test
+scores agree either way, so this is not overfitting). A softmax-linear probe is naturally suited to representations
+where the target is affine in the input; Bayesian evidence composes additively in log-space (Prop 8), so a raw
+probability vector is a poor match for a softmax read-out even when the information is, in a real sense, entirely
+present. **Consequence: a low PSR/belief-probe score on a trained network's hidden state is evidence about how that
+information is encoded (log-additively vs. otherwise), not proof the information is absent.** This is now stated
+explicitly rather than left as an unstated assumption behind the probe ceiling.
+
+## 12. Design principles enforced by this project's architecture (not aspirations -- each is code + a test)
+1. Every mathematical claim ships with the code that would falsify it (a proof, a brute-force check, or a simulation
+   with a theory-derived tolerance) in the SAME commit as the claim.
+2. Every measuring instrument is itself calibrated against a case with a known answer (an oracle, a blind model, a
+   toy system solvable in closed form) before being trusted on a real model.
+3. A "the network learned X" claim is never accepted from convergence alone; it is decomposed into sufficiency,
+   decodability, dynamical form and stability, each measured and each falsifiable independently.
+4. A metric's ceiling is measured, not assumed; "near 1.0" is asserted only where an oracle achieves it, and the
+   actual measured ceiling is documented and used as the comparison point instead.
+5. Statistical decisions (p-values, corrections, confidence intervals) are never computed ad hoc; they are routed
+   through one validated module whose guards are themselves proved and mutation-tested (evaluation/rigorous_validation.py).
+6. Confounds found in real runs (an under-tuned learning rate, a core/head learning-rate mismatch) are fixed in the
+   infrastructure and disclosed in PREREGISTRATION.md's revision history, not silently absorbed into "the architecture is worse."
+
+
+## 13. Controllable hidden states (structured.py) -- intervention, not inference
+
+Sections 1-11 measure whether an existing black-box architecture happens to encode Bayes-relevant structure after
+training. This section builds two cells where the classical objects THEMSELVES are the parameters, so they can be
+set, frozen, ablated and intervened on directly rather than inferred with a probe.
+
+**KoopmanCell**: h_t is k explicit complex modes z_k = r_k e^{i theta_k} in POLAR form -- the model's Koopman
+spectrum IS (r_k, theta_k), not something fitted to h_t afterward. `set_spectrum(eig, freeze=True)` pins it exactly
+to `env.koopman_eig()` / `env.closed_loop_eig()`; `ablate_rotation()` mechanically zeroes every theta_k, a CAUSAL
+test of Prop 7 (a real-diagonal recurrence cannot carry rotation), not a correlational one.
+
+**Experiment (osc_rotating, 800 steps, 3 conditions, same architecture and budget):**
+
+| spectrum | excess MSE | trainable params | learned/frozen spectrum |
+|---|---|---|---|
+| learned freely | 0.00476 | 197 | 0.144-0.306j, 0.314-0.482j (nowhere near truth) |
+| initialised at truth, then trained | 0.00185 | 197 | 0.521+0.480j, 0.449-0.543j |
+| FROZEN at truth | **0.00081** | 193 | 0.505+0.502j, 0.505-0.502j (exact) |
+| true closed-loop spectrum | -- | -- | 0.505+0.502j, 0.505-0.502j |
+
+Freezing the spectrum to ground truth beats free learning by 5.9x with FEWER trainable parameters, and at this
+budget gradient descent alone does not find anything close to the true spectrum on its own. This is a causal claim
+(controlling the spectrum changes the outcome) that no amount of post hoc probing of a black box could make.
+
+**NeuralBayesCell**: h_t IS a log-probability vector over n_state cells; the recursion has the exact functional form
+of the Bayes filter (Prop 8) with a LEARNED transition kernel and evidence map. `inject(t, true_belief)` overwrites
+h_t at a chosen position; `set_transition(T, freeze=True)` pins the transition kernel to the true env.T.
+
+**Experiment (grid_drift, 600 steps, inject the true belief at t=20, then let the model's own recursion continue):**
+
+| | t=19 (pre) | t=20 (injected) | t=21 | t=25 | t=30 | t=40 |
+|---|---|---|---|---|---|---|
+| LEARNED T, no injection | 2.632 | 2.617 | 2.616 | 2.643 | 2.661 | 2.628 |
+| LEARNED T, WITH injection | 2.632 | **0** | 1.902 | 2.622 | 2.659 | 2.628 |
+| TRUE T (frozen), no injection | 1.177 | 1.194 | 1.204 | 1.244 | 1.313 | 1.277 |
+| TRUE T (frozen), WITH injection | 1.177 | **0** | 0.173 | 0.47 | 0.727 | 0.904 |
+
+(KL to the exact belief; t=19 matches exactly with and without injection, confirming injection is causal -- it never
+touches the past.) With a merely-trained transition kernel, a correction injected at t=20 is destroyed within one
+step (t=21 is already close to baseline, t=25 onward indistinguishable). With the transition kernel frozen to the
+TRUE env.T, the correction is still worth 1.4x at t=40, twenty steps later. This is a causal test end-to-end loss
+alone cannot make: it asks whether the recursion, GIVEN a known-correct starting point, behaves like the true
+process going forward, which a lucky end-to-end fit could satisfy without the recursion itself being right.
+
+Both cells match `models.SeqModel`'s core interface (arch names `"koopman"`, `"koopman_pure"`, `"neuralbayes"`) and
+so are trainable/evaluable with every tool already built for the four baseline architectures.

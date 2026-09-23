@@ -40,7 +40,12 @@ PRESETS = {
 def train(model, env: POMDP, cfg: dict, seed: int, log_every: int = 250, verbose: bool = True):
     torch.manual_seed(seed)
     gen = torch.Generator().manual_seed(10_000 + seed)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=0.01, betas=(0.9, 0.98))
+    if "lr_core" in cfg and hasattr(model, "core_parameters"):
+        opt = torch.optim.AdamW(
+            [dict(params=model.core_parameters(), lr=cfg["lr_core"]), dict(params=model.head_parameters(), lr=cfg["lr"])],
+            weight_decay=0.01, betas=(0.9, 0.98))
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=0.01, betas=(0.9, 0.98))
     steps, warm = cfg["steps"], max(1, cfg["steps"] // 20)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warm) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(1.0, s / steps)))))

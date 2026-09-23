@@ -51,5 +51,46 @@ python -m beliefdelay.viz results/grid --env grid_patrol --out figures/maps_patr
 ```
 Presets: `smoke` (seconds), `cpu_quick` (the old 3-seed 1500-step run; exploratory only), `cpu` (5 seeds, 3000 steps), `small`/`full` (GPU). Runs resume; JSONs record LR, flags, `d_model`, `n_params`.
 
+## Statistical integrity (`evaluation/rigorous_validation.py`)
+Every p-value, correction and confidence interval in this project is routed through one validated module, not scattered ad hoc
+code. It exists because it is easy — often unconsciously — to bend an evaluation until p < 0.05 (the replication crisis): choosing
+a tail after seeing the data, peeking and stopping early, reporting only the comparisons that worked, or widening a margin after
+the fact. Each guard below is a theorem, and `tests/test_rigorous_validation.py` (52 tests) checks it by exact enumeration or by
+simulation with a tolerance derived from the theory, then runs the same checker against deliberately broken "mutant" implementations
+that must fail. `python -m beliefdelay.evaluation.rigorous_validation` prints the module docstring; `... lock` writes a hash-locked
+`prereg.json`/`PREREG.sha256` pair; `analysis.py --locked` runs only the registered comparisons, once each, and refuses if the file
+was edited afterward, if a family is incomplete, or if the seed count does not match what was locked in.
+
+| Guard | Theorem | Failure it prevents |
+|---|---|---|
+| Exact permutation test | `P(p<=a)<=a` for every `a` (finite exchangeability) | inflated significance from a bespoke test statistic |
+| Monte-Carlo p-value | `p=(b+1)/(m+1)`, never 0 (Phipson & Smyth 2010) | reporting `p=0` |
+| Holm step-down | strong FWER control under *arbitrary* dependence (Holm 1979) | multiple-comparison fishing |
+| Minimum attainable p | exact combinatorics; "cannot reach 0.05" is reported, not hidden | claiming significance a design could never show |
+| Fixed design / alpha-spending | peeking inflates alpha (Armitage–McPherson–Rowe 1969) | optional stopping |
+| Pre-registration lock | SHA-256 over canonical JSON; run-once, whole-family, sealed-until-final | changing the hypothesis after seeing results |
+| Bootstrap CI | refused below n=5 (coverage collapses; shown by simulation) | a false sense of precision from 3 seeds |
+| Equivalence (TOST) | a non-significant difference is INCONCLUSIVE, never "no effect" | overclaiming a null result |
+| Input sanitation | NaN/inf/duplicate seeds are refused, not silently dropped | quietly discarding inconvenient runs |
+
+## Making "it learned automatically" explicit (`explicitness.py`)
+Composes existing instruments into four independently falsifiable axes per model: SUFFICIENCY (excess KL/skill),
+DECODABILITY (PSR/belief probes), DYNAMICAL FORM (does h_t evolve linearly, with a spectrum matching the process's
+own -- `env.koopman_eig()`?), STABILITY (amplification growth under a small parameter perturbation -- Luo et al. 2024,
+NeurIPS, "Efficient Recurrent Off-Policy RL Requires a Context-Encoder-Specific Learning Rate", arXiv:2405.15384).
+Calibrated against an oracle (must score near ceiling) and a blind model (must score near floor) before being
+trusted on real checkpoints; building that calibration caught two real bugs (see THEORY.md §11). Run on any saved
+checkpoint: `python -m beliefdelay.explicitness results/cpu --env grid_patrol`.
+
+## Split learning rate (`--split-lr`)
+Luo et al. 2024 prove that for any recurrence with contractive hidden dynamics (K_h<1 -- satisfied by GRU/LSTM via
+sigmoid gates and by Mamba/RWKV via their bounded per-channel decay), a single gradient step's effect on the output
+is amplified across rollout length and converges to a fixed factor. In our models the recurrent core is ~99% of the
+parameters, so training the whole network at one learning rate is exactly the confound they describe. `--split-lr`
+runs a two-stage search (tuning.py) for a separate core vs. head learning rate; `amplification.py` reproduces their
+diagnostic directly (validated against an exact toy linear RNN in tests/test_amplification.py) and should be run on
+TRAINED checkpoints, not fresh ones -- at random init none of our four architectures show real amplification, since
+the gates/decays have not yet learned to hold long memory.
+
 ## Status
 No hypothesis test has been run. The first CPU run (abstract envs, 3 seeds) is disclosed in the pre-registration and motivated the fixes above; its LR search was clipped at the top of the grid in 7 of 12 cells, so its architecture ranking should not be trusted.

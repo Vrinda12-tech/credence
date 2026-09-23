@@ -44,3 +44,26 @@ def adaptive_lr_search(score_fn, grid, default=3e-3, tol=2e-3, lo=1e-4, hi=1e-1,
     at_bound = (not flat) and (best == max(scores) or best == min(scores))
     return dict(best=best, scores={str(k): v for k, v in scores.items()}, flat=flat, spread=spread,
                 extended=extended, at_bound=at_bound)
+
+
+def two_stage_lr_search(score_joint, score_split, joint_grid, ratio_grid=(1.0, 1/3, 1/10, 1/30, 1/100, 1/300),
+                        default=3e-3, tol=2e-3, log=print):
+    """RESeL-motivated (Luo et al. 2024, arXiv:2405.15384): search a joint LR first (both param groups equal, same as
+    our original single-LR search -- this stage is IDENTICAL to a normal run when ratio ends up at 1.0), then hold the
+    head LR fixed at that value and search a core/head RATIO, extending outward the same way adaptive_lr_search does.
+    This is a greedy two-stage search, not a joint optimum: documented as such in PREREGISTRATION.md.
+
+    score_joint(lr) -> held-out loss with core_lr = head_lr = lr
+    score_split(core_lr, head_lr) -> held-out loss with the two param groups at different rates
+    Returns dict(head_lr, core_lr, ratio, joint, ratio_search) all JSON-serialisable.
+    """
+    joint = adaptive_lr_search(score_joint, joint_grid, default=default, tol=tol, log=log)
+    head_lr = joint["best"]
+    lo, hi = 1e-4, 3.0
+
+    def score_ratio(r):
+        return score_split(head_lr * r, head_lr)
+
+    ratio_search = adaptive_lr_search(score_ratio, list(ratio_grid), default=1.0, tol=tol, lo=lo, hi=hi, factor=3.0, log=log)
+    return dict(head_lr=head_lr, core_lr=head_lr * ratio_search["best"], ratio=ratio_search["best"],
+                joint=joint, ratio_search=ratio_search)

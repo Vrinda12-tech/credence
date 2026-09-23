@@ -21,6 +21,7 @@ import torch.nn.functional as F
 
 ARCHS = ["lstm", "transformer", "rwkv", "mamba"]
 EXTRA_ARCHS = ["delay_mlp", "mamba_noconv"]   # classical null (literal delay embedding) and the conv-tap ablation
+STRUCTURED_ARCHS = ["koopman", "koopman_pure", "neuralbayes"]   # controllable hidden state (structured.py); n_state is set from env
 DELAY_WINDOW = 8
 
 
@@ -41,7 +42,7 @@ class DelayMLP(nn.Module):
 
 class SeqModel(nn.Module):
     def __init__(self, arch: str, fields, n_out: int, d_model: int, n_layers: int = 2,
-                 max_len: int = 128, d_state: int = 16, in_dim: int | None = None):
+                 max_len: int = 128, d_state: int = 16, in_dim: int | None = None, n_state: int | None = None):
         super().__init__()
         self.arch, self.n_out, self.d, self.in_dim = arch, n_out, d_model, in_dim
         self.fields = tuple(fields) if fields is not None else ()
@@ -77,6 +78,14 @@ class SeqModel(nn.Module):
         elif arch == "delay_mlp":
             self.core = DelayMLP(d_model)
             self.final_norm = nn.LayerNorm(d_model)
+        elif arch in ("koopman", "koopman_pure"):
+            from .structured import KoopmanCell
+            self.core = KoopmanCell(d_model, selective=(arch == "koopman"))
+            self.final_norm = nn.LayerNorm(d_model)
+        elif arch == "neuralbayes":
+            from .structured import NeuralBayesCell
+            self.core = NeuralBayesCell(d_model, n_state=n_state or d_model, d_out=d_model)
+            self.final_norm = nn.LayerNorm(d_model)
         elif arch == "mamba_hf":
             from transformers import MambaConfig, MambaModel
             cfg = MambaConfig(vocab_size=8, hidden_size=d_model, num_hidden_layers=n_layers,
@@ -103,13 +112,25 @@ class SeqModel(nn.Module):
             h, _ = self.core(x)
         elif a in ("transformer", "rwkv", "mamba_hf"):
             h = self.core(inputs_embeds=x).last_hidden_state
-        elif a in ("mamba", "mamba_noconv", "delay_mlp"):
+        elif a in ("mamba", "mamba_noconv", "delay_mlp", "koopman", "koopman_pure", "neuralbayes"):
             h = self.core(x)
         h = self.final_norm(h)
         return self.head(h), h
 
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+    def core_parameters(self):
+        """The recurrent/attention stack (RESeL's 'context encoder'): where Luo et al. 2024 (NeurIPS, arXiv:2405.15384)
+        prove output perturbations are amplified across rollout length for any contractive hidden recurrence (K_h < 1),
+        which GRU/LSTM (sigmoid gates), Mamba and RWKV (bounded per-channel decay) all satisfy."""
+        return list(self.core.parameters())
+
+    def head_parameters(self):
+        """Everything NOT in the recurrent core: embeddings, input projection, final norm, output head.
+        RESeL's finding: this part should NOT be slowed down with the core's learning rate."""
+        core_ids = {id(p) for p in self.core.parameters()}
+        return [p for p in self.parameters() if id(p) not in core_ids]
 
 
 def build_model(arch: str, fields, n_out: int, d_model: int, n_layers: int = 2, max_len: int = 128):

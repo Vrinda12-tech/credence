@@ -70,6 +70,19 @@ class LinearGaussian:
             S[t] = c @ P_prior @ c + self.rn ** 2
         return m_post, mu, S
 
+    def steady_gain(self, iters: int = 2000) -> torch.Tensor:
+        P = self.P0t.clone()
+        for _ in range(iters):
+            s_t = self.c @ P @ self.c + self.rn ** 2
+            Kg = (P @ self.c) / s_t
+            P = self.A @ (P - torch.outer(Kg, self.c @ P)) @ self.A.T + self.Q
+        return Kg
+
+    def closed_loop_eig(self) -> np.ndarray:
+        """Koopman spectrum of the FILTER (belief-mean dynamics driven by y): eig( A (I - K c^T) ).  Data-independent."""
+        K = self.steady_gain()
+        return np.linalg.eigvals((self.A @ (torch.eye(2, dtype=DT) - torch.outer(K, self.c))).numpy())
+
     def kernel(self, kmax: int, L: int = 64) -> np.ndarray:
         """Exact Kalman memory kernel g(k) = d mu*_t / d y_{t-k}, k=0..kmax (filter is linear, so an impulse gives it)."""
         out = []
@@ -86,6 +99,12 @@ def make_lgssm(name: str) -> LinearGaussian:
         return LinearGaussian([[r * np.cos(w), -r * np.sin(w)], [r * np.sin(w), r * np.cos(w)]], [1.0, 0.0], name=name)
     if name == "osc_decay":
         return LinearGaussian([[0.97, 0.0], [0.0, 0.80]], [1 / np.sqrt(2), 1 / np.sqrt(2)], name=name)
+    # long-memory pair: exposes finite-horizon approximation (real exponentials can mimic a short damped cosine; not a long one)
+    if name == "osc_rotating_slow":
+        r, w = 0.995, 2 * np.pi / 8
+        return LinearGaussian([[r * np.cos(w), -r * np.sin(w)], [r * np.sin(w), r * np.cos(w)]], [1.0, 0.0], name=name)
+    if name == "osc_decay_slow":
+        return LinearGaussian([[0.995, 0.0], [0.0, 0.9]], [1 / np.sqrt(2), 1 / np.sqrt(2)], name=name)
     raise KeyError(name)
 
 

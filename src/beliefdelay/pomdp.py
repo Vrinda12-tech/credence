@@ -117,6 +117,14 @@ class POMDP:
             pi = new
         return pi / pi.sum()
 
+    def koopman_eig(self) -> "np.ndarray":
+        """Eigenvalues of the TRUE hidden-state transition operator (the process's own Koopman/Perron-Frobenius
+        spectrum), action-averaged.  This is what a model's hidden-state dynamics is compared against in
+        explicitness.py; it is the process's spectrum, not a filter closed-loop spectrum (no clean LTI filter form
+        exists outside the linear-Gaussian case -- see lgssm.LinearGaussian.closed_loop_eig for that case)."""
+        import numpy as np
+        return np.linalg.eigvals(self.T.mean(0).numpy())
+
     def dobrushin(self) -> float:
         """max_a delta(T_a), delta(P)=max_{i,j} TV(P_i, P_j).  delta<1 => contraction of the predict step."""
         best = 0.0

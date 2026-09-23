@@ -17,6 +17,37 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from .evaluation import rigorous_validation as rv
+
+
+def boot_ci(x, n=5000, seed=0):
+    """(mean, lo, hi).  Validated: refused (NaN interval) for n < 5, where a percentile bootstrap under-covers."""
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    if len(x) == 0:
+        return np.nan, np.nan, np.nan
+    try:
+        return rv.bootstrap_ci(x, n_boot=n, seed=seed)
+    except rv.UnderpoweredError:
+        return float(x.mean()), np.nan, np.nan
+
+
+def perm_test_less(a, b, max_perm=20000, seed=0) -> float:
+    return rv.permutation_pvalue(a, b, "less", n_perm=max_perm, seed=seed)
+
+
+def perm_test_two_sided(a, b, max_perm=20000, seed=0) -> float:
+    return rv.permutation_pvalue(a, b, "two-sided", n_perm=max_perm, seed=seed)
+
+
+def min_attainable_p(na: int, nb: int) -> float:
+    return rv.min_attainable_p(na, nb, "two-sided")
+
+
+def holm(pvals):
+    return rv.holm(pvals)
+
+
 METRICS = {  # column -> (label, direction: +1 higher is better, -1 lower is better)
     "excess_kl": ("excess predictive KL", -1),
     "skill": ("skill = 1 - excess/KL(marginal)", +1),
@@ -38,69 +69,6 @@ def load(dirpath: str) -> pd.DataFrame:
         r["profile_model"] = np.array(r["profile_model"]); r["profile_bayes"] = np.array(r["profile_bayes"])
         rows.append(r)
     return pd.DataFrame(rows)
-
-
-def boot_ci(x, n=5000, seed=0):
-    x = np.asarray(x, float)
-    x = x[np.isfinite(x)]
-    if len(x) == 0:
-        return np.nan, np.nan, np.nan
-    rng = np.random.default_rng(seed)
-    m = rng.choice(x, (n, len(x))).mean(1)
-    return x.mean(), *np.percentile(m, [2.5, 97.5])
-
-
-def perm_test_less(a, b, max_perm=20000, seed=0) -> float:
-    """H1: mean(a) < mean(b).  Exact if C(n_a+n_b, n_a) <= max_perm else Monte-Carlo."""
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    pooled, na = np.concatenate([a, b]), len(a)
-    obs = a.mean() - b.mean()
-    from math import comb
-    if comb(len(pooled), na) <= max_perm:
-        from itertools import combinations as C
-        cnt = tot = 0
-        for idx in C(range(len(pooled)), na):
-            m = np.zeros(len(pooled), bool); m[list(idx)] = True
-            tot += 1; cnt += (pooled[m].mean() - pooled[~m].mean()) <= obs + 1e-15
-        return cnt / tot
-    rng = np.random.default_rng(seed)
-    cnt = 0
-    for _ in range(max_perm):
-        p = rng.permutation(pooled)
-        cnt += (p[:na].mean() - p[na:].mean()) <= obs + 1e-15
-    return (cnt + 1) / (max_perm + 1)
-
-
-def perm_test_two_sided(a, b, max_perm=20000, seed=0) -> float:
-    """H1: means differ (no direction chosen after seeing data).  Exact if feasible, else Monte-Carlo."""
-    from math import comb
-    from itertools import combinations as C
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    pooled, na = np.concatenate([a, b]), len(a)
-    obs = abs(a.mean() - b.mean())
-    if comb(len(pooled), na) <= max_perm:
-        cnt = tot = 0
-        for idx in C(range(len(pooled)), na):
-            m = np.zeros(len(pooled), bool); m[list(idx)] = True
-            tot += 1; cnt += abs(pooled[m].mean() - pooled[~m].mean()) >= obs - 1e-15
-        return cnt / tot
-    rng = np.random.default_rng(seed); cnt = 0
-    for _ in range(max_perm):
-        p_ = rng.permutation(pooled); cnt += abs(p_[:na].mean() - p_[na:].mean()) >= obs - 1e-15
-    return (cnt + 1) / (max_perm + 1)
-
-
-def min_attainable_p(na: int, nb: int) -> float:
-    """Smallest two-sided p a permutation test can return with these sample sizes (perfect separation)."""
-    from math import comb
-    return min(1.0, 2.0 / comb(na + nb, na))
-
-
-def holm(pvals):
-    order = np.argsort(pvals); m = len(pvals); adj = np.empty(m); run = 0.0
-    for rank, i in enumerate(order):
-        run = max(run, (m - rank) * pvals[i]); adj[i] = min(1.0, run)
-    return adj
 
 
 def summary_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -164,6 +132,21 @@ def interaction(df, group_a, group_b, env1, env2, metric, n_boot=5000, seed=0):
     lo, hi = np.percentile(bs, [2.5, 97.5])
     return dict(metric=metric, env1=env1, env2=env2, a="+".join(group_a), b="+".join(group_b), interaction=float(pt),
                 ci95=(float(lo), float(hi)), excludes_zero=bool(lo > 0 or hi < 0))
+
+
+def run_locked(df, prereg_path="prereg.json", hash_path="PREREG.sha256"):
+    """CONFIRMATORY analysis bound to the hash-locked pre-registration (evaluation/rigorous_validation.py).  Refuses unregistered
+    comparisons, wrong seed counts, partial families and any edit of the pre-registration after locking."""
+    la = rv.load_locked(prereg_path, hash_path)
+    for cid, c in la.registry.items():
+        g = df[df.env == c["env"]]
+        a = g[g.arch == c["a"]].sort_values("seed")
+        b = g[g.arch == c["b"]].sort_values("seed")
+        rv.check_unique_seeds(a.seed.tolist())
+        rv.check_unique_seeds(b.seed.tolist())
+        la.run(cid, a[c["metric"]].values, b[c["metric"]].values)
+    rep = la.finalize()
+    return pd.DataFrame([dict(id=k, **v) for k, v in rep.items()])
 
 
 def per_seed_table(df, metric="excess_kl"):
@@ -254,10 +237,15 @@ def make_figures(df: pd.DataFrame, out: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results_dir"); ap.add_argument("--out", default="figures")
+    ap.add_argument("--locked", action="store_true", help="confirmatory mode: only the comparisons in the hash-locked prereg.json, all of them, once")
+    ap.add_argument("--prereg", default="prereg.json"); ap.add_argument("--hash", default="PREREG.sha256")
     a = ap.parse_args()
     df = load(a.results_dir)
     if df.empty:
         raise SystemExit("no results found")
+    if a.locked:
+        print(run_locked(df, a.prereg, a.hash).to_string(index=False))
+        return
     df_all = df
     df = df[df.target_params == df.target_params.max()]
     pd.set_option("display.width", 220); pd.set_option("display.max_colwidth", 60)

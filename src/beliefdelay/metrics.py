@@ -95,7 +95,10 @@ def _block_kl(y, q, nb):
 
 def fit_probe(Xtr, Ytr, Xte, Yte, nblocks: int = 1, l2: float = 1e-3, max_iter: int = 150) -> dict:
     """Linear softmax probe (one softmax per block) minimising the mean block KL(y||q).  score = 1 - KL/KL(marginal)."""
-    mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True) + 1e-6
+    mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True)
+    sd = sd.clamp_min(0.05 * sd[sd > 0].mean().clamp_min(1e-6) if (sd > 0).any() else 1.0)  # floor relative to typical scale, not an absolute 1e-6: an exactly-zero-variance feature
+    # (e.g. a structurally-impossible cell in a raw belief vector) must be down-weighted to ~0 contribution,
+    # not blown up into a huge input by dividing by a tiny constant (caught by test_explicitness.py's oracle check)
     Xtr, Xte = (Xtr - mu) / sd, (Xte - mu) / sd
     Ytr, Yte = Ytr.float(), Yte.float()
     K = Ytr.shape[1]
@@ -125,7 +128,10 @@ def fit_probe(Xtr, Ytr, Xte, Yte, nblocks: int = 1, l2: float = 1e-3, max_iter: 
 
 def fit_ridge_r2(Xtr, Ytr, Xte, Yte, lam: float = 1.0):
     """Ridge regression of low-dimensional belief moments on the hidden state; returns per-target held-out R^2."""
-    mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True) + 1e-6
+    mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True)
+    sd = sd.clamp_min(0.05 * sd[sd > 0].mean().clamp_min(1e-6) if (sd > 0).any() else 1.0)  # floor relative to typical scale, not an absolute 1e-6: an exactly-zero-variance feature
+    # (e.g. a structurally-impossible cell in a raw belief vector) must be down-weighted to ~0 contribution,
+    # not blown up into a huge input by dividing by a tiny constant (caught by test_explicitness.py's oracle check)
     Xtr, Xte = ((Xtr - mu) / sd).double(), ((Xte - mu) / sd).double()
     Ytr, Yte = Ytr.double(), Yte.double()
     ones = lambda X: torch.cat([X, torch.ones(len(X), 1, dtype=X.dtype)], 1)

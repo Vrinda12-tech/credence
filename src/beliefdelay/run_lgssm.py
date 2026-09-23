@@ -23,7 +23,8 @@ import torch.nn.functional as F
 
 from .lgssm import LG_ENVS, make_lgssm
 from .metrics import _dev, fit_ridge_r2
-from .models import ARCHS, EXTRA_ARCHS, build_matched
+from .koopman import fit_dmdc, spectral_match
+from .models import ARCHS, EXTRA_ARCHS, SeqModel, build_matched
 from .tuning import adaptive_lr_search
 
 LG_PRESETS = {
@@ -134,12 +135,21 @@ def main():
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--out", default="results/lgssm")
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--L", type=int, default=None, help="sequence length override (use with the *_slow envs)")
+    ap.add_argument("--kmax", type=int, default=None, help="kernel length override")
+    ap.add_argument("--spectrum", default=None, help="results dir: Koopman/DMDc spectrum of hidden dynamics per (env, arch); needs checkpoints")
     ap.add_argument("--analyze", default=None)
     ap.add_argument("--fig", default="figures/kernels.png")
     a = ap.parse_args()
     if a.analyze:
         return analyze(a.analyze, a.fig)
+    if a.spectrum:
+        return spectrum(a.spectrum)
     cfg = dict(LG_PRESETS[a.preset])
+    if a.L:
+        cfg["L"] = a.L
+    if a.kmax:
+        cfg["kmax"] = a.kmax
     if a.steps:
         cfg["steps"] = a.steps
     seeds = a.seeds if a.seeds is not None else cfg["seeds"]
@@ -169,9 +179,46 @@ def main():
                 res.update(env=env_name, arch=arch, seed=seed, n_params=model.n_params(), d_model=model.d, lr=lr_info["best"],
                            lr_at_bound=lr_info.get("at_bound"), history=hist, eig=env.meta["eig"],
                            cfg={k: v for k, v in cfg.items() if k != "seeds"})
+                os.makedirs(os.path.join(a.out, "ckpt"), exist_ok=True)
+                torch.save(model.state_dict(), os.path.join(a.out, "ckpt", os.path.basename(path).replace(".json", ".pt")))
                 json.dump(res, open(path, "w"))
                 print(f"    -> excess_mse {res['excess_mse']:.5f} skill {res['skill']:.3f} state_r2 {res['state_r2']:.3f} "
                       f"kernel_err {res['kernel_rel_err']:.3f}", flush=True)
+
+
+def spectrum(dirpath, rank=4, n=512):
+    """Koopman/DMDc spectrum of each trained model's last-layer hidden dynamics vs the exact closed-loop (filter) spectrum."""
+    import pandas as pd
+    from .koopman import fit_dmdc, spectral_match
+    rows = []
+    for f in sorted(glob.glob(os.path.join(dirpath, "*__s*.json"))):
+        if "lr__" in f:
+            continue
+        r = json.load(open(f))
+        ck = os.path.join(dirpath, "ckpt", os.path.basename(f).replace(".json", ".pt"))
+        if not os.path.exists(ck):
+            continue
+        env = make_lgssm(r["env"])
+        m = SeqModel(r["arch"], None, 1, r["d_model"], 2, max_len=r["cfg"]["L"], in_dim=1)
+        m.load_state_dict(torch.load(ck, map_location="cpu")); m.eval()
+        y, _ = env.sample(n, r["cfg"]["L"], torch.Generator().manual_seed(2024))
+        _, h = _run(m, y)
+        U = y[:, :-1, None].float()
+        fit = fit_dmdc(h, U, rank=rank, burn=r["cfg"]["burn_in"])
+        sm = spectral_match(fit["eig"], env.closed_loop_eig())
+        rows.append(dict(env=r["env"], arch=r["arch"], seed=r["seed"], fit_r2=fit["r2"], spec_dist=sm["spec_dist"],
+                         has_rotation=sm["has_rotation"], lead_angle_deg=sm["lead_angle_deg"], lead_mod=abs(sm["lead_complex"])))
+    if not rows:
+        print("no checkpoints found (re-run without --analyze; checkpoints are saved to <out>/ckpt)")
+        return
+    df = pd.DataFrame(rows)
+    pd.set_option("display.width", 200)
+    for env in sorted(df.env.unique()):
+        print(f"\n{env}: exact filter (Koopman-with-input) spectrum = {np.round(make_lgssm(env).closed_loop_eig(), 3)}"
+              f"   [angle {np.degrees(np.abs(np.angle(make_lgssm(env).closed_loop_eig()))).round(1)} deg]")
+        print(df[df.env == env].groupby("arch")[["fit_r2", "spec_dist", "has_rotation", "lead_angle_deg", "lead_mod"]].mean().round(3).to_string())
+    print("\nreading guide: spec_dist ~ 0 and matching angle => hidden dynamics reproduce the true spectrum; low fit_r2 => linear read of the hidden state is unreliable; "
+          "transformer rows are descriptive only (its state is not recurrent).")
 
 
 def analyze(dirpath, fig):
