@@ -168,7 +168,8 @@ class POMDP:
             post[:, t] = b
             a = act[:, t]
             prior = self._propagate(b, a)
-            pred[:, t] = torch.einsum("bn,bnm->bm", prior, self.O[a])
+            # Optimization: replace einsum("bn,bnm->bm") with torch.bmm for lower overhead in inner loop
+            pred[:, t] = torch.bmm(prior.unsqueeze(1), self.O[a]).squeeze(1)
             a_prev = a
         return (post, pred, ll) if return_loglik else (post, pred)
 
@@ -196,7 +197,8 @@ class POMDP:
             a = a_w[:, w]
             prior = self._propagate(b, a)
             a_prev = a
-        pred = torch.einsum("bn,bnm->bm", prior, self.O[a_prev])
+        # Optimization: replace einsum("bn,bnm->bm") with torch.bmm for lower overhead
+        pred = torch.bmm(prior.unsqueeze(1), self.O[a_prev]).squeeze(1)
         post, pr = post_f.clone(), pred_f.clone()
         post[:, W:] = b.reshape(B, nt, self.N)
         pr[:, W:] = pred.reshape(B, nt, self.M)

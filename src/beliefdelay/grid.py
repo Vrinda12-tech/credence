@@ -255,7 +255,8 @@ class GridPOMDP:
             post[:, t] = b
             prior = b @ self.T
             npos = self.nxt[act[:, t], pos[:, t]]
-            pred[:, t] = torch.einsum("bc,brc->br", prior, self.Lk[npos])
+            # Optimization: replace einsum("bc,brc->br") with torch.bmm for lower overhead in inner loop
+            pred[:, t] = torch.bmm(self.Lk[npos], prior.unsqueeze(-1)).squeeze(-1)
         return (post, pred, ll) if return_loglik else (post, pred)
 
     def window_filter(self, obs, act, W: int):
@@ -275,7 +276,8 @@ class GridPOMDP:
             b = un / un.sum(1, keepdim=True)
             prior = b @ self.T
         npos = self.nxt[act[:, ts].reshape(-1), pos[:, ts].reshape(-1)]
-        pr = torch.einsum("bc,brc->br", prior, self.Lk[npos])
+        # Optimization: replace einsum("bc,brc->br") with torch.bmm for lower overhead
+        pr = torch.bmm(self.Lk[npos], prior.unsqueeze(-1)).squeeze(-1)
         post, pred = post_f.clone(), pred_f.clone()
         post[:, W:] = b.reshape(B, nt, self.C)
         pred[:, W:] = pr.reshape(B, nt, self.R)
