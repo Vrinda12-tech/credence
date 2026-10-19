@@ -5,3 +5,7 @@
 ## 2025-05-18 - Replacing nested loop bmm with single pre-contracted GEMM
 **Learning:** Calling `torch.bmm` inside nested loops over actions $A$ and horizons $K$ for indexed positions incurs repeated tensor allocation and call overhead. Computing reading likelihoods across all map cells upfront via a single 2D matrix multiplication per horizon (`pk @ self.Lk_mat`) and then gathering positions `p` in the inner loop speeds up `GridPOMDP.test_vector` by ~2.5x with exact floating-point equivalence.
 **Action:** Lift static observation matrix contractions outside nested loops into a single batch matrix multiplication before indexing.
+
+## 2025-05-19 - Pre-contracting action transitions and emission matrices into a single PSR operator
+**Learning:** In `POMDP.test_vector`, sequentially propagating belief states through $A \times K$ loops (`prior = prior @ T[a]`, `prior @ O[a]`) repeatedly applies matrix multiplications on high-dimensional batch/sequence tensors `(B, L, N)`. Pre-contracting the linear transition-emission operators $T_a^k O_a$ upfront into a single static $(N, A \cdot K \cdot M)$ matrix $M_{\text{psr}}$ allows computing all predictive state projections in a single `post @ M_psr` matrix multiplication. This reduces overhead by ~35x with exact floating-point equivalence.
+**Action:** For multi-horizon predictive vector computations with static linear transition/emission operators, pre-contract operators into a single block matrix before multiplying by the batch sequence state tensor.
