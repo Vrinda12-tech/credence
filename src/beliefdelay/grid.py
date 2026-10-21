@@ -275,9 +275,13 @@ class GridPOMDP:
             pred[:, t] = torch.bmm(self.Lk[npos], prior.unsqueeze(-1)).squeeze(-1)
         return (post, pred, ll) if return_loglik else (post, pred)
 
-    def window_filter(self, obs, act, W: int):
-        """Optimal predictor that only sees the last W (position, reading) pairs, restarted from the stationary law."""
-        post_f, pred_f = self.filter(obs, act)
+    def window_filter(self, obs, act, W: int, full_filter: tuple[torch.Tensor, torch.Tensor] | None = None):
+        """Optimal predictor that only sees the last W (position, reading) pairs, restarted from the stationary law.
+
+        Optimization: accept optional pre-computed full_filter=(post_f, pred_f) to avoid
+        redundant exact filter rollouts when evaluating multiple window sizes W.
+        """
+        post_f, pred_f = full_filter if full_filter is not None else self.filter(obs, act)
         B, L, _ = post_f.shape
         if W >= L:
             return post_f, pred_f
