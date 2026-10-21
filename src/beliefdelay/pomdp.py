@@ -180,13 +180,17 @@ class POMDP:
         return (post, pred, ll) if return_loglik else (post, pred)
 
     # ---- finite-memory ("delay-embedding") filter --------------------------------------
-    def window_filter(self, obs: torch.Tensor, act: torch.Tensor, W: int):
+    def window_filter(self, obs: torch.Tensor, act: torch.Tensor, W: int,
+                      full_filter: tuple[torch.Tensor, torch.Tensor] | None = None):
         """Bayes filter that only sees the last W observations (restarted from the stationary law).
 
         For t < W it coincides with the full filter (the window covers the whole history).
         This is the optimal predictor that uses a hard delay window of length W.
+
+        Optimization: accept optional pre-computed full_filter=(post_f, pred_f) to avoid
+        redundant exact filter rollouts when evaluating multiple window sizes W.
         """
-        post_f, pred_f = self.filter(obs, act)
+        post_f, pred_f = full_filter if full_filter is not None else self.filter(obs, act)
         B, L, _ = post_f.shape
         if W >= L:
             return post_f, pred_f
