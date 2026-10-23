@@ -13,3 +13,7 @@
 ## 2025-05-20 - Reusing exact Bayes filter trajectories across window length sweeps
 **Learning:** Computing effective delay depth metrics (`window_error_curve`) over a list of window sizes $W$ called `env.window_filter(obs, act, W)` once for each $W$, re-running `env.filter(obs, act)` $1 + |W|$ times on identical sequence tensors. Allowing `window_filter` to accept an optional pre-computed `full_filter=(post_f, pred_f)` tuple and passing it during window sweeps reduces redundant filter rollouts from $|Ws| + 1$ down to 1, yielding a ~1.5x-1.8x speedup with exact floating-point equivalence.
 **Action:** When computing multi-window/delay-embedding properties over sequence histories, pass pre-computed exact filter outputs to `window_filter`.
+
+## 2025-05-21 - Batching lag perturbation evaluations in sequence influence profile computations
+**Learning:** In `influence_profiles`, evaluating interventional influence $I(k)$ over $k=0 \dots k_{max}$ sequential iterations ran $k_{max} + 1$ separate forward passes for `model` and $k_{max} + 1$ separate rollouts for `env.filter`. Batching all $k_{max} + 1$ perturbed observation sequences into a single tensor `((kmax + 1) * n_seq, L + 1)` allows computing model output predictions and exact Bayes filter rollouts in a single batched pass, eliminating Python loop and call overhead.
+**Action:** Concatenate interventional/perturbed sequence histories across perturbation lags into a single batch tensor prior to model forward inference and filter evaluation.
