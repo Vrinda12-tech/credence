@@ -196,17 +196,30 @@ def influence_profiles(model, env: POMDP, kmax: int, n_seq: int, L: int, seed: i
     lg, _ = model(env.tokens(obs, act).to(dv))
     p0 = torch.softmax(lg[:, t].to("cpu", torch.float64), -1)
     ps0 = env.filter(obs, act)[1][:, t]
-    Im, Is = [], []
+
+    # Optimization: batch lag perturbation evaluations (k=0..kmax) into a single model pass
+    # and single env.filter call instead of 2 * (kmax + 1) individual sequential calls.
+    # This reduces Python loop overhead and improves GPU/CPU tensor parallel utilization.
+    o2_list = []
     for k in range(kmax + 1):
         delta = torch.randint(1, env.n_out, (n_seq,), generator=gen)
-        o2 = env.perturb(obs, t - k, delta)
-        lg2, _ = model(env.tokens(o2, act).to(dv))
-        p1 = torch.softmax(lg2[:, t].to("cpu", torch.float64), -1)
-        ps1 = env.filter(o2, act)[1][:, t]
-        Im.append(float(tv(p0, p1).mean()))
-        Is.append(float(tv(ps0, ps1).mean()))
+        o2_list.append(env.perturb(obs, t - k, delta))
+
+    all_o2 = torch.cat(o2_list, dim=0)
+    all_act = act.repeat(kmax + 1, 1)
+
+    # Process all perturbed sequences through the model and exact filter in batched calls
+    toks = env.tokens(all_o2, all_act)
+    all_lg, _ = model(toks.to(dv))
+    all_p1 = torch.softmax(all_lg[:, t].to("cpu", torch.float64), -1).reshape(kmax + 1, n_seq, -1)
+    all_ps1 = env.filter(all_o2, all_act)[1][:, t].reshape(kmax + 1, n_seq, -1)
+
+    # Compute vectorized TV distances across all lags
+    tv_m = 0.5 * (p0.unsqueeze(0) - all_p1).abs().sum(-1).mean(-1)
+    tv_s = 0.5 * (ps0.unsqueeze(0) - all_ps1).abs().sum(-1).mean(-1)
+
     model.train(was_training)
-    return np.array(Im), np.array(Is)
+    return np.array(tv_m.tolist()), np.array(tv_s.tolist())
 
 
 def profile_stats(Im: np.ndarray, Is: np.ndarray) -> dict:
