@@ -103,13 +103,13 @@ class POMDP:
 
     # ---- helpers -----------------------------------------------------------------------
     def _propagate(self, b: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        """Row-vector push-forward b @ T[a] with a per-row action (loops over A, not over rows)."""
-        out = torch.empty_like(b)
-        for ai in range(self.A):
-            idx = (a == ai).nonzero(as_tuple=True)[0]
-            if idx.numel():
-                out[idx] = b[idx] @ self.T[ai]
-        return out
+        """Row-vector push-forward b @ T[a] with a per-row action.
+
+        Optimization: Replace explicit action loop and mask indexing with a single
+        batched matrix multiplication `torch.bmm(b.unsqueeze(1), self.T[a]).squeeze(1)`.
+        This eliminates Python loop overhead and mask tensor allocations in filter rollouts.
+        """
+        return torch.bmm(b.unsqueeze(1), self.T[a]).squeeze(1)
 
     def stationary(self, iters: int = 5000, tol: float = 1e-13) -> torch.Tensor:
         """Stationary law of the action-averaged (lazy) chain; used as the window-filter prior."""
